@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+.token*
+token.json
+.GDS*
+venv/
+.GitSecret
+.idea/
+.DS_Store
