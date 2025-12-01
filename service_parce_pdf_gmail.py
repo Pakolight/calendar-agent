@@ -73,32 +73,52 @@ class CalendarAgentService:
         ]
 
         token_path = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
-        credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
 
         if os.path.exists(token_path):
             # Load existing credentials
             creds = Credentials.from_authorized_user_file(token_path, scopes)
             return creds
         else:
-            # Check for credentials.json file
-            if not os.path.exists(credentials_path):
-                raise FileNotFoundError(
-                    f"Credentials file {credentials_path} not found. "
-                    f"Download it from Google Cloud Console."
+            # Get credentials from environment variable
+            credentials_json = os.environ.get("CREDENTIALS")
+            if not credentials_json:
+                raise ValueError(
+                    "CREDENTIALS environment variable not found. "
+                    "Set it in your .env file with the Google OAuth client credentials."
                 )
 
             # Create authentication flow and start authorization process
             try:
                 from google_auth_oauthlib.flow import InstalledAppFlow
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes)
-                creds = flow.run_local_server(port=0)
+                import tempfile
+                import json
 
-                # Save the obtained credentials
-                with open(token_path, 'w') as token:
-                    token.write(creds.to_json())
+                # Parse the credentials JSON
+                try:
+                    credentials_data = json.loads(credentials_json)
+                except json.JSONDecodeError:
+                    raise ValueError("Invalid JSON in CREDENTIALS environment variable")
 
-                print(f"Credentials successfully saved to {token_path}")
-                return creds
+                # Create a temporary file with the credentials
+                with tempfile.NamedTemporaryFile(mode='w', delete=False) as temp_file:
+                    json.dump(credentials_data, temp_file)
+                    temp_credentials_path = temp_file.name
+
+                try:
+                    # Use the temporary file for authentication
+                    flow = InstalledAppFlow.from_client_secrets_file(temp_credentials_path, scopes)
+                    creds = flow.run_local_server(port=0)
+
+                    # Save the obtained credentials
+                    with open(token_path, 'w') as token:
+                        token.write(creds.to_json())
+
+                    print(f"Credentials successfully saved to {token_path}")
+                    return creds
+                finally:
+                    # Clean up the temporary file
+                    if os.path.exists(temp_credentials_path):
+                        os.unlink(temp_credentials_path)
             except ImportError:
                 raise ImportError(
                     "google-auth-oauthlib is required for automatic authentication. "
