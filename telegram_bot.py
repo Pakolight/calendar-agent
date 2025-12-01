@@ -11,6 +11,11 @@ load_dotenv()
 API_TOKEN = os.environ.get("TELEGRAM_BOT", None)
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "")
 BOT_OWNER_ID = os.environ.get("BOT_OWNER_ID", "")
+# Convert BOT_OWNER_ID to integer if it exists
+try:
+    BOT_OWNER_ID = int(BOT_OWNER_ID) if BOT_OWNER_ID else None
+except ValueError:
+    print(f"Warning: BOT_OWNER_ID '{BOT_OWNER_ID}' is not a valid integer. Owner verification will not work correctly.")
 
 # This is a Telegram bot that can check for callsheets in Gmail
 # and process them using the CalendarAgentService
@@ -37,7 +42,7 @@ Press the 'Check callsheets' button to start processing.\
 @bot.message_handler(func=lambda message: message.text == 'Check callsheets')
 def check_callsheets(message):
     # Only allow the bot owner to use this feature
-    if BOT_OWNER_ID and str(message.from_user.id) != BOT_OWNER_ID:
+    if BOT_OWNER_ID and message.from_user.id != BOT_OWNER_ID:
         bot.reply_to(message, "Sorry, you are not authorized to use this feature.")
         return
 
