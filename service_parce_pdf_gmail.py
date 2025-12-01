@@ -74,7 +74,56 @@ class CalendarAgentService:
 
         token_path = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
 
-        if os.path.exists(token_path):
+        # Check if we're in production mode
+        is_production = os.environ.get('DYNO') == 'True'
+
+        # If in production mode and environment variables are set, use them
+        if is_production and os.environ.get('ACCESS_TOKEN') and os.environ.get('REFRESH_TOKEN'):
+            print("Using credentials from environment variables")
+            access_token = os.environ.get('ACCESS_TOKEN')
+            refresh_token = os.environ.get('REFRESH_TOKEN')
+            token_uri = os.environ.get('TOKEN_URI', "https://oauth2.googleapis.com/token")
+            client_id = os.environ.get('CLIENT_ID')
+            client_secret = os.environ.get('CLIENT_SECRET')
+
+            # Parse SCOPES from environment variable if available, otherwise use default
+            try:
+                env_scopes = os.environ.get('SCOPES')
+                if env_scopes:
+                    scopes = json.loads(env_scopes)
+            except (json.JSONDecodeError, TypeError):
+                # Keep using default scopes if parsing fails
+                pass
+
+            # Get expiry from environment variable
+            expiry = os.environ.get('EXPIRY')
+            # Convert expiry string to datetime object
+            if expiry:
+                # Remove Z suffix if present for strptime
+                if expiry.endswith('Z'):
+                    expiry = expiry[:-1]
+                # Parse the datetime string
+                try:
+                    expiry = datetime.strptime(expiry.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                except ValueError:
+                    print(f"Warning: Could not parse expiry date '{expiry}'. Using default expiry.")
+                    expiry = None
+
+            # Create credentials from tokens
+            creds = Credentials(
+                token=access_token,
+                refresh_token=refresh_token,
+                token_uri=token_uri,
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=scopes,
+                expiry=expiry
+            )
+
+            # Hardcode universe_domain
+            creds._universe_domain = "googleapis.com"
+            return creds
+        elif os.path.exists(token_path):
             # Load existing credentials
             creds = Credentials.from_authorized_user_file(token_path, scopes)
             return creds
@@ -91,7 +140,6 @@ class CalendarAgentService:
             try:
                 from google_auth_oauthlib.flow import InstalledAppFlow
                 import tempfile
-                import json
 
                 # Parse the credentials JSON
                 try:
@@ -108,9 +156,7 @@ class CalendarAgentService:
                     # Use the temporary file for authentication
                     flow = InstalledAppFlow.from_client_secrets_file(temp_credentials_path, scopes)
 
-                    # Determine if we're in a production environment (Heroku)
-                    is_production = os.environ.get('DYNO') is not None
-
+                    # Determine if we're in a production environment
                     if is_production:
                         # In production, use console-based auth flow
                         print("Running in production environment. Using console authentication flow.")
@@ -119,6 +165,13 @@ class CalendarAgentService:
                         # In development, use local server auth flow
                         print("Running in development environment. Using local server authentication flow.")
                         creds = flow.run_local_server(port=0)
+
+                        # Print tokens to console when not in production
+                        creds_json = json.loads(creds.to_json())
+                        print("\n===== OAUTH TOKENS =====")
+                        print(f"ACCESS_TOKEN = {creds_json.get('token')}")
+                        print(f"REFRESH_TOKEN = {creds_json.get('refresh_token')}")
+                        print("=======================\n")
 
                     # Save the obtained credentials
                     with open(token_path, 'w') as token:
