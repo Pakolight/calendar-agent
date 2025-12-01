@@ -7,10 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, List, Optional
 
+from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from openai import OpenAI
 import pdfplumber
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 @dataclass
@@ -41,8 +45,37 @@ def get_google_credentials() -> Credentials:
         "https://www.googleapis.com/auth/calendar",
     ]
     token_path = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
-    creds = Credentials.from_authorized_user_file(token_path, scopes)
-    return creds
+    credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+
+    if os.path.exists(token_path):
+        # Загрузить существующие учетные данные
+        creds = Credentials.from_authorized_user_file(token_path, scopes)
+        return creds
+    else:
+        # Проверяем наличие файла credentials.json
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Файл учетных данных {credentials_path} не найден. "
+                f"Загрузите его из Google Cloud Console."
+            )
+
+        # Создаем поток аутентификации и запускаем процесс авторизации
+        try:
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes)
+            creds = flow.run_local_server(port=0)
+
+            # Сохраняем полученные учетные данные
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
+
+            print(f"Учетные данные успешно сохранены в {token_path}")
+            return creds
+        except ImportError:
+            raise ImportError(
+                "Для автоматической аутентификации требуется google-auth-oauthlib. "
+                "Установите ее: pip install google-auth-oauthlib"
+            )
 
 
 def fetch_unread_messages(sender: str, service) -> Iterable[dict]:

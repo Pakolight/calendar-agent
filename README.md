@@ -28,6 +28,11 @@ This script automates processing unread Gmail messages with PDF attachments from
    ```
 3. Run the bot (polling Gmail periodically):
    ```bash
+   python main.py
+   ```
+
+   Note: Environment variables are loaded from the `.env` file using python-dotenv. You can also override them on the command line if needed:
+   ```bash
    SENDER_EMAIL=organizer@example.com OPENAI_API_KEY=... POLL_INTERVAL_SECONDS=300 python main.py
    ```
 

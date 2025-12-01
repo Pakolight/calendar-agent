@@ -9,3 +9,5 @@ venv/
 .GitSecret
 .idea/
 .DS_Store
+credentials.json
+.idea/calendar-agent.iml
