@@ -147,8 +147,15 @@ def parse_with_llm(pdf_text: str) -> ParsedEvent:
         "Translate all text to English. Provide ISO 8601 timestamps for start_time and end_time when possible. "
         "If a value is missing, use null. "
         "Extract any Google Maps link as location_url and derive the textual venue address for the address field. "
-        "Compose notes as a human-readable summary that includes schedule, address, tasks, general notes, and the location link (when available). "
-        "Include the weather key as null; weather will be fetched separately."
+        "Compose notes as a human-readable, emoji-labeled set of sections using 24-hour times and bullet lists. "
+        "Start notes with '{name} — {address}' (omit missing pieces), then add:\n"
+        "🕒 Schedule with bullet items '• Activity: HH:MM–HH:MM';\n"
+        "📍 Address with the full venue address on its own line;\n"
+        "(if present) the Google Maps link on the next bullet;\n"
+        "⸻ (em dash rule) separators between major sections;\n"
+        "📝 Comments for general notes and staffing details;\n"
+        "✅ Tasks for actionable to-dos. "
+        "Keep weather null so it can be filled later."
     )
     completion = client.chat.completions.create(
         model=model,
@@ -175,15 +182,9 @@ def create_calendar_event(event: ParsedEvent, credentials: Credentials) -> dict:
 
 def build_description(event: ParsedEvent) -> str:
     lines = []
-    if event.notes:
-        lines.append(event.notes)
-    if event.schedule:
-        formatted_schedule = format_schedule(event.schedule)
-        lines.append(f"Schedule:\n{formatted_schedule}")
-    if event.address:
-        lines.append(f"Address: {event.address}")
-    if event.location_url:
-        lines.append(f"Location link: {event.location_url}")
+    note_body = event.notes or build_structured_note(event)
+    if note_body:
+        lines.append(note_body)
 
     weather_text: Optional[str] = None
     if event.weather:
@@ -198,7 +199,151 @@ def build_description(event: ParsedEvent) -> str:
 
     if weather_text:
         lines.append(f"Weather: {weather_text}")
-    return "\n".join(lines)
+    return "\n\n".join(lines)
+
+
+def build_structured_note(event: ParsedEvent) -> str:
+    parts: List[str] = []
+
+    header_parts = [event.name] if event.name else []
+    if event.address:
+        header_parts.append(event.address)
+    if header_parts:
+        parts.append(" — ".join(header_parts))
+
+    schedule_text = format_schedule(event.schedule) if event.schedule else None
+    if schedule_text:
+        parts.append("🕒 Schedule")
+        parts.append(schedule_text)
+
+    if schedule_text and (event.address or event.location_url):
+        parts.append("⸻")
+
+    if event.address or event.location_url:
+        parts.append("📍 Address")
+        if event.address:
+            parts.append(event.address)
+        if event.location_url:
+            parts.append(f"• Map: {event.location_url}")
+
+    return "\n\n".join(parts)
+
+
+def format_schedule(schedule: Optional[object]) -> str:
+    if isinstance(schedule, list):
+        lines = []
+        for item in schedule:
+            activity = item.get("activity", "")
+            start_time = format_time(item.get("start_time"))
+            end_time = format_time(item.get("end_time"))
+            if activity or start_time or end_time:
+                lines.append(f"• {activity}: {start_time}–{end_time}")
+        return "\n".join(lines)
+    return str(schedule)
+
+
+def format_time(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value).strftime("%H:%M")
+    except ValueError:
+        return value
+
+
+def format_weather(weather: dict) -> str:
+    temperature = weather.get("temperature_c")
+    wind_speed = weather.get("wind_speed_kts")
+    precipitation = weather.get("precipitation")
+    parts = []
+    if temperature is not None:
+        parts.append(f"Temp: {temperature}°C")
+    if wind_speed is not None:
+        parts.append(f"Wind: {wind_speed} kts")
+    if precipitation is not None:
+        parts.append(f"Precipitation: {precipitation}")
+    return ", ".join(parts)
+
+
+def build_weather_snippet(event: ParsedEvent) -> Optional[str]:
+    if not event.start or not (event.address or event.location_url):
+        return None
+
+    try:
+        dt = datetime.fromisoformat(event.start)
+    except ValueError:
+        return None
+
+    query = event.address or ""
+    if event.location_url and "maps" in event.location_url:
+        query = event.location_url
+
+    coords = geocode_location(query)
+    if not coords:
+        return None
+
+    forecast = fetch_weather(coords["lat"], coords["lon"], dt.date())
+    if not forecast:
+        return None
+
+    parts = []
+    if forecast.get("temperature") is not None:
+        parts.append(f"temp {forecast['temperature']}°C")
+    if forecast.get("wind_speed_kts") is not None:
+        parts.append(f"wind {forecast['wind_speed_kts']} kts")
+    if forecast.get("precipitation") is not None:
+        parts.append(f"precip {forecast['precipitation']} mm")
+    return ", ".join(parts)
+
+
+def geocode_location(query: str) -> Optional[dict]:
+    if not query:
+        return None
+    resp = requests.get(
+        "https://geocoding-api.open-meteo.com/v1/search", params={"name": query, "count": 1}
+    )
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    results = data.get("results") or []
+    if not results:
+        return None
+    first = results[0]
+    return {"lat": first.get("latitude"), "lon": first.get("longitude")}
+
+
+def fetch_weather(lat: float, lon: float, date) -> Optional[dict]:
+    if lat is None or lon is None:
+        return None
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m,precipitation,wind_speed_10m",
+        "timezone": "UTC",
+    }
+    resp = requests.get("https://api.open-meteo.com/v1/forecast", params=params)
+    if resp.status_code != 200:
+        return None
+
+    payload = resp.json()
+    hourly = payload.get("hourly", {})
+    timestamps = hourly.get("time", [])
+    temps = hourly.get("temperature_2m", [])
+    precips = hourly.get("precipitation", [])
+    winds = hourly.get("wind_speed_10m", [])
+    if not timestamps:
+        return None
+
+    target_indices = [i for i, t in enumerate(timestamps) if t.startswith(date.isoformat())]
+    if not target_indices:
+        return None
+
+    idx = target_indices[len(target_indices) // 2]
+    celsius = temps[idx] if idx < len(temps) else None
+    precip = precips[idx] if idx < len(precips) else None
+    wind_m_s = winds[idx] if idx < len(winds) else None
+    wind_kts = round(wind_m_s * 1.94384, 1) if wind_m_s is not None else None
+    return {"temperature": celsius, "precipitation": precip, "wind_speed_kts": wind_kts}
 
 
 def format_schedule(schedule: Optional[object]) -> str:
