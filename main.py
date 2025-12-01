@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from openai import OpenAI
 import pdfplumber
 
@@ -49,6 +50,7 @@ def get_google_credentials() -> Credentials:
     scopes = [
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/drive.file",
     ]
     token_path = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
     credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
@@ -93,7 +95,7 @@ def fetch_unread_messages(sender: str, service) -> Iterable[dict]:
         yield full_message
 
 
-def extract_pdf_parts(message: dict, service) -> Iterable[bytes]:
+def extract_pdf_parts(message: dict, service) -> Iterable[tuple[bytes, str]]:
     parts: List[dict] = []
     payload = message.get("payload", {})
     if "parts" in payload:
@@ -101,8 +103,8 @@ def extract_pdf_parts(message: dict, service) -> Iterable[bytes]:
     elif payload.get("body", {}).get("attachmentId"):
         parts.append(payload)
 
-    for part in parts:
-        filename = part.get("filename", "")
+    for idx, part in enumerate(parts):
+        filename = part.get("filename") or f"attachment-{message.get('id', 'email')}-{idx}.pdf"
         if not filename.lower().endswith(".pdf"):
             continue
 
@@ -118,7 +120,7 @@ def extract_pdf_parts(message: dict, service) -> Iterable[bytes]:
             .get(userId="me", messageId=message["id"], id=attachment_id)
             .execute()
         )
-        yield base64.urlsafe_b64decode(attachment.get("data", ""))
+        yield base64.urlsafe_b64decode(attachment.get("data", "")), filename
 
 
 def mark_message_as_read(message_id: str, service) -> None:
@@ -166,13 +168,15 @@ def parse_with_llm(pdf_text: str) -> ParsedEvent:
     return ParsedEvent.from_response(content)
 
 
-def create_calendar_event(event: ParsedEvent, credentials: Credentials) -> dict:
+def create_calendar_event(
+    event: ParsedEvent, credentials: Credentials, pdf_links: Optional[List[str]] = None
+) -> dict:
     calendar = build("calendar", "v3", credentials=credentials)
     start = event.start or datetime.now(timezone.utc).isoformat()
     end = event.end or datetime.now(timezone.utc).isoformat()
     body = {
         "summary": event.name,
-        "description": build_description(event),
+        "description": build_description(event, pdf_links=pdf_links),
         "start": {"dateTime": start},
         "end": {"dateTime": end},
         "location": event.address or event.location_url,
@@ -180,11 +184,16 @@ def create_calendar_event(event: ParsedEvent, credentials: Credentials) -> dict:
     return calendar.events().insert(calendarId="primary", body=body).execute()
 
 
-def build_description(event: ParsedEvent) -> str:
+def build_description(event: ParsedEvent, pdf_links: Optional[List[str]] = None) -> str:
     lines = []
     note_body = event.notes or build_structured_note(event)
     if note_body:
         lines.append(note_body)
+
+    if pdf_links:
+        lines.append("📄 PDF attachments")
+        for link in pdf_links:
+            lines.append(f"• {link}")
 
     weather_text: Optional[str] = None
     if event.weather:
@@ -346,6 +355,38 @@ def fetch_weather(lat: float, lon: float, date) -> Optional[dict]:
     return {"temperature": celsius, "precipitation": precip, "wind_speed_kts": wind_kts}
 
 
+def upload_pdf_to_drive(
+    data: bytes, filename: str, credentials: Credentials
+) -> Optional[str]:
+    drive = build("drive", "v3", credentials=credentials)
+    file_metadata = {"name": filename}
+    folder_id = os.environ.get("DRIVE_FOLDER_ID")
+    if folder_id:
+        file_metadata["parents"] = [folder_id]
+
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype="application/pdf", resumable=True)
+    created = (
+        drive.files()
+        .create(body=file_metadata, media_body=media, fields="id, webViewLink")
+        .execute()
+    )
+    file_id = created.get("id")
+    if not file_id:
+        return None
+
+    drive.permissions().create(
+        fileId=file_id,
+        body={"type": "anyone", "role": "reader"},
+        fields="id",
+    ).execute()
+
+    if created.get("webViewLink"):
+        return created["webViewLink"]
+
+    link_info = drive.files().get(fileId=file_id, fields="webViewLink, webContentLink").execute()
+    return link_info.get("webViewLink") or link_info.get("webContentLink")
+
+
 def format_schedule(schedule: Optional[object]) -> str:
     if isinstance(schedule, list):
         lines = []
@@ -457,10 +498,12 @@ def process_messages(sender_email: str, credentials: Credentials) -> int:
     gmail_service = build("gmail", "v1", credentials=credentials)
     created_events = 0
     for message in fetch_unread_messages(sender_email, gmail_service):
-        for attachment in extract_pdf_parts(message, gmail_service):
+        for attachment, filename in extract_pdf_parts(message, gmail_service):
             pdf_text = pdf_text_from_bytes(attachment)
             parsed = parse_with_llm(pdf_text)
-            created = create_calendar_event(parsed, credentials)
+            pdf_link = upload_pdf_to_drive(attachment, filename, credentials)
+            links = [pdf_link] if pdf_link else None
+            created = create_calendar_event(parsed, credentials, pdf_links=links)
             print(f"Created event {created.get('id')} for {parsed.name}")
             created_events += 1
         mark_message_as_read(message.get("id"), gmail_service)
