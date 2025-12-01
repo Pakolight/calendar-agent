@@ -107,7 +107,18 @@ class CalendarAgentService:
                 try:
                     # Use the temporary file for authentication
                     flow = InstalledAppFlow.from_client_secrets_file(temp_credentials_path, scopes)
-                    creds = flow.run_local_server(port=0)
+
+                    # Determine if we're in a production environment (Heroku)
+                    is_production = os.environ.get('DYNO') is not None
+
+                    if is_production:
+                        # In production, use console-based auth flow
+                        print("Running in production environment. Using console authentication flow.")
+                        creds = flow.run_console()
+                    else:
+                        # In development, use local server auth flow
+                        print("Running in development environment. Using local server authentication flow.")
+                        creds = flow.run_local_server(port=0)
 
                     # Save the obtained credentials
                     with open(token_path, 'w') as token:
@@ -217,8 +228,8 @@ class CalendarAgentService:
         body = {
             "summary": event.name,
             "description": self._build_description(event, pdf_links=pdf_links),
-            "start": {"dateTime": start},
-            "end": {"dateTime": end},
+            "start": {"dateTime": start, "timeZone": "UTC"},
+            "end": {"dateTime": end, "timeZone": "UTC"},
             "location": event.address or event.location_url,
         }
         return calendar.events().insert(calendarId="primary", body=body).execute()
