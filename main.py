@@ -48,10 +48,11 @@ class ParsedEvent:
 
 def get_google_credentials() -> Credentials:
     scopes = [
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/drive.file",
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/calendar',
+        'https://www.googleapis.com/auth/drive.file'
     ]
+
     token_path = os.environ.get("GOOGLE_TOKEN_PATH", "token.json")
     credentials_path = os.environ.get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
 
