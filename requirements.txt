@@ -18,7 +18,9 @@ httplib2==0.31.0
 httpx==0.28.1
 idna==3.11
 jiter==0.12.0
+numpy==2.2.0
 oauthlib==3.3.1
+opencv-python==4.11.0.86
 openai==2.8.1
 pdfminer.six==20251107
 pdfplumber==0.11.8
@@ -33,6 +35,7 @@ pydantic_core==2.41.5
 pyparsing==3.2.5
 pypdfium2==5.1.0
 pyTelegramBotAPI==4.29.1
+pytesseract==0.3.13
 python-dotenv==1.2.1
 requests==2.32.5
 requests-oauthlib==2.0.0
