@@ -1,8 +1,12 @@
-import telebot
+import os
+import tempfile
 import logging
+
+import telebot
 from telebot import types
 from dotenv import load_dotenv
-import os
+
+from board_ocr import events_to_json, format_events_text, process_board_image
 from service_parce_pdf_gmail import CalendarAgentService
 
 load_dotenv()
@@ -21,6 +25,47 @@ except ValueError:
 # and process them using the CalendarAgentService
 
 bot = telebot.TeleBot(API_TOKEN)
+
+
+@bot.message_handler(content_types=['photo'])
+def handle_board_photo(message: telebot.types.Message) -> None:
+    """Handle photos of planning boards, run OCR, and return parsed events."""
+    bot.send_chat_action(message.chat.id, 'typing')
+
+    try:
+        photo = message.photo[-1]
+        file_info = bot.get_file(photo.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+
+        temp_dir = tempfile.mkdtemp(prefix="board_ocr_")
+        image_path = os.path.join(temp_dir, 'board.jpg')
+        with open(image_path, 'wb') as image_file:
+            image_file.write(downloaded)
+
+        events = process_board_image(image_path)
+        if not events:
+            bot.reply_to(message, "I couldn't recognize any rows. Please try another photo.")
+            return
+
+        summary = f"I found {len(events)} event{'s' if len(events) != 1 else ''} on the board."
+        formatted = format_events_text(events)
+        bot.send_message(message.chat.id, f"{summary}\n\n{formatted}")
+
+        json_payload = events_to_json(events)
+        json_path = os.path.join(temp_dir, 'events.json')
+        with open(json_path, 'w', encoding='utf-8') as json_file:
+            json_file.write(json_payload)
+
+        with open(json_path, 'rb') as json_file:
+            bot.send_document(
+                message.chat.id,
+                json_file,
+                caption="Parsed events as JSON",
+                visible_file_name='events.json',
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.exception("Failed to process board photo")
+        bot.reply_to(message, f"Failed to process the photo: {exc}")
 
 
 # Handle '/start' and '/help'
